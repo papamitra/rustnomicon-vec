@@ -1,0 +1,7 @@
+[package]
+name = "vec"
+version = "0.1.0"
+authors = ["papamitra <papamitra@gmail.com>"]
+edition = "2018"
+
+[dependencies]
