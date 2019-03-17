@@ -10,6 +10,12 @@ pub struct Vec<T> {
     len: usize,
 }
 
+pub struct IntoIter<T> {
+    vec: Vec<T>,
+    head: isize,
+    tail: isize,
+}
+
 impl<T> Vec<T> {
     fn new() -> Self {
         assert!(mem::size_of::<T>() != 0, "We're not ready to handle ZSTs");
@@ -76,6 +82,51 @@ impl<T> Vec<T> {
             unsafe { Some(ptr::read(self.ptr.as_ptr().offset(self.len as isize))) }
         }
     }
+
+    pub fn insert(&mut self, index: usize, elem: T) {
+        // Note: `<=` because it's valid to insert after everything
+        // which would be equivalent to push.
+        assert!(index <= self.len, "index out of bounds");
+        if self.cap == self.len {
+            self.grow();
+        }
+
+        unsafe {
+            if index < self.len {
+                // ptr::copy(src, dest, len): "copy from source to dest len elems"
+                ptr::copy(
+                    self.ptr.as_ptr().offset(index as isize),
+                    self.ptr.as_ptr().offset(index as isize + 1),
+                    self.len - index,
+                );
+            }
+            ptr::write(self.ptr.as_ptr().offset(index as isize), elem);
+            self.len += 1;
+        }
+    }
+
+    pub fn remove(&mut self, index: usize) -> T {
+        // Note: `<` because it's *not* valid to remove after everything
+        assert!(index < self.len, "index out of bounds");
+        unsafe {
+            self.len -= 1;
+            let result = ptr::read(self.ptr.as_ptr().offset(index as isize));
+            ptr::copy(
+                self.ptr.as_ptr().offset(index as isize + 1),
+                self.ptr.as_ptr().offset(index as isize),
+                self.len - index,
+            );
+            result
+        }
+    }
+
+    pub fn into_iter(self) -> IntoIter<T> {
+        IntoIter {
+            head: self.len as isize,
+            vec: self,
+            tail: 0,
+        }
+    }
 }
 
 impl<T> Drop for Vec<T> {
@@ -106,6 +157,29 @@ impl<T> Deref for Vec<T> {
 impl<T> DerefMut for Vec<T> {
     fn deref_mut(&mut self) -> &mut [T] {
         unsafe { ::std::slice::from_raw_parts_mut(self.ptr.as_ptr(), self.len) }
+    }
+}
+
+impl<T> Iterator for IntoIter<T> {
+    type Item = T;
+    fn next(&mut self) -> Option<T> {
+        if self.head == self.tail {
+            None
+        } else {
+            self.head -= 1;
+            unsafe { Some(ptr::read(self.vec.ptr.as_ptr().offset(self.head))) }
+        }
+    }
+}
+
+impl<T> DoubleEndedIterator for IntoIter<T> {
+    fn next_back(&mut self) -> Option<T> {
+        if self.head == self.tail {
+            None
+        } else {
+            self.tail += 1;
+            unsafe { Some(ptr::read(self.vec.ptr.as_ptr().offset(self.tail - 1))) }
+        }
     }
 }
 
@@ -140,5 +214,35 @@ mod tests {
         assert_eq!(v[1..][0], 2);
         v[..][0] = 4;
         assert_eq!(v[0], 4);
+    }
+
+    #[test]
+    fn insert_remove() {
+        let mut v = Vec::<i32>::new();
+
+        v.insert(0, 1);
+        assert_eq!(v[0], 1);
+
+        v.insert(0, 2);
+        assert_eq!(v[..], [2, 1]);
+
+        v.remove(0);
+        assert_eq!(v[..], [1]);
+    }
+
+    #[test]
+    fn into_iter() {
+        let mut v = Vec::new();
+
+        v.push(1);
+        v.push(2);
+        v.push(3);
+
+        let mut iter = v.into_iter();
+
+        assert_eq!(iter.next(), Some(3));
+        assert_eq!(iter.next_back(), Some(1));
+        assert_eq!(iter.next(), Some(2));
+        assert_eq!(iter.next(), None);
     }
 }
