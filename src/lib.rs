@@ -1,6 +1,6 @@
 #![feature(ptr_internals, alloc)]
-use core::ptr::Unique;
-use std::alloc::{alloc, realloc, Layout};
+use core::ptr::{self, Unique};
+use std::alloc::{alloc, dealloc, realloc, Layout};
 use std::mem;
 
 pub struct Vec<T> {
@@ -53,12 +53,63 @@ impl<T> Vec<T> {
             self.cap = new_cap;
         }
     }
+
+    pub fn push(&mut self, elem: T) {
+        if self.len == self.cap {
+            self.grow();
+        }
+
+        unsafe {
+            ptr::write(self.ptr.as_ptr().offset(self.len as isize), elem);
+        }
+
+        // Can't fail, we'll OOM first.
+        self.len += 1;
+    }
+
+    pub fn pop(&mut self) -> Option<T> {
+        if self.len == 0 {
+            None
+        } else {
+            self.len -= 1;
+            unsafe { Some(ptr::read(self.ptr.as_ptr().offset(self.len as isize))) }
+        }
+    }
+}
+
+impl<T> Drop for Vec<T> {
+    fn drop(&mut self) {
+        if self.cap != 0 {
+            while let Some(_) = self.pop() {}
+
+            let align = mem::align_of::<T>();
+            let elem_size = mem::size_of::<T>();
+            let num_bytes = elem_size * self.cap;
+            unsafe {
+                dealloc(
+                    self.ptr.as_ptr() as *mut _,
+                    Layout::from_size_align_unchecked(num_bytes, align),
+                );
+            }
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::Vec;
+
     #[test]
-    fn it_works() {
-        assert_eq!(2 + 2, 4);
+    fn test() {
+        let mut v = Vec::<i32>::new();
+        assert_eq!(v.pop(), None);
+
+        v.push(1);
+        v.push(2);
+        v.push(3);
+        assert_eq!(v.pop(), Some(3));
+        assert_eq!(v.pop(), Some(2));
+        assert_eq!(v.pop(), Some(1));
+        assert_eq!(v.pop(), None);
     }
 }
