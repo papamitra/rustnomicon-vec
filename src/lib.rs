@@ -2,6 +2,7 @@
 use core::ptr::{self, Unique};
 use std::alloc::{alloc, dealloc, realloc, Layout};
 use std::mem;
+use std::ops::{Deref, DerefMut};
 
 pub struct Vec<T> {
     ptr: Unique<T>,
@@ -95,6 +96,19 @@ impl<T> Drop for Vec<T> {
     }
 }
 
+impl<T> Deref for Vec<T> {
+    type Target = [T];
+    fn deref(&self) -> &[T] {
+        unsafe { ::std::slice::from_raw_parts(self.ptr.as_ptr(), self.len) }
+    }
+}
+
+impl<T> DerefMut for Vec<T> {
+    fn deref_mut(&mut self) -> &mut [T] {
+        unsafe { ::std::slice::from_raw_parts_mut(self.ptr.as_ptr(), self.len) }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::Vec;
@@ -111,5 +125,20 @@ mod tests {
         assert_eq!(v.pop(), Some(2));
         assert_eq!(v.pop(), Some(1));
         assert_eq!(v.pop(), None);
+    }
+
+    #[test]
+    fn deref() {
+        let mut v = Vec::<i32>::new();
+
+        assert_eq!(v[..], []);
+
+        v.push(1);
+        v.push(2);
+        v.push(3);
+
+        assert_eq!(v[1..][0], 2);
+        v[..][0] = 4;
+        assert_eq!(v[0], 4);
     }
 }
