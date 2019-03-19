@@ -4,16 +4,35 @@ use std::alloc::{alloc, dealloc, realloc, Layout};
 use std::mem;
 use std::ops::{Deref, DerefMut};
 
+struct RawValIter<T> {
+    start: *const T,
+    end: *const T,
+}
+
+impl<T> RawValIter<T> {
+    // unsafe to construct because it has no associated lifetimes.
+    // This is necessary to store a RawValIter in the same struct as
+    // its actual allocation. OK since it's a private implementation
+    // detail.
+    unsafe fn new(slice: &[T]) -> Self {
+        RawValIter {
+            start: slice.as_ptr(),
+            end: if slice.len() == 0 {
+                // if `len = 0`, then this is not actually allocated memory.
+                // Need to avoid offsetting because that will give wrong
+                // information to LLVM via GEP.
+                slice.as_ptr()
+            } else {
+                slice.as_ptr().offset(slice.len() as isize)
+            },
+        }
+    }
+}
+
 pub struct Vec<T> {
     ptr: Unique<T>,
     cap: usize,
     len: usize,
-}
-
-pub struct IntoIter<T> {
-    vec: Vec<T>,
-    head: isize,
-    tail: isize,
 }
 
 impl<T> Vec<T> {
@@ -122,9 +141,8 @@ impl<T> Vec<T> {
 
     pub fn into_iter(self) -> IntoIter<T> {
         IntoIter {
-            head: self.len as isize,
+            raw: unsafe { RawValIter::new(&self) },
             vec: self,
-            tail: 0,
         }
     }
 }
@@ -160,25 +178,34 @@ impl<T> DerefMut for Vec<T> {
     }
 }
 
+pub struct IntoIter<T> {
+    vec: Vec<T>,
+    raw: RawValIter<T>,
+}
+
 impl<T> Iterator for IntoIter<T> {
     type Item = T;
     fn next(&mut self) -> Option<T> {
-        if self.head == self.tail {
+        if self.raw.start == self.raw.end {
             None
         } else {
-            self.head -= 1;
-            unsafe { Some(ptr::read(self.vec.ptr.as_ptr().offset(self.head))) }
+            unsafe {
+                self.raw.end = self.raw.end.offset(-1);
+                Some(ptr::read(self.raw.end))
+            }
         }
     }
 }
 
 impl<T> DoubleEndedIterator for IntoIter<T> {
     fn next_back(&mut self) -> Option<T> {
-        if self.head == self.tail {
+        if self.raw.start == self.raw.end {
             None
         } else {
-            self.tail += 1;
-            unsafe { Some(ptr::read(self.vec.ptr.as_ptr().offset(self.tail - 1))) }
+            unsafe {
+                self.raw.start = self.raw.start.offset(1);
+                Some(ptr::read(self.raw.start.offset(-1)))
+            }
         }
     }
 }
