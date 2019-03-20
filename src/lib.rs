@@ -1,6 +1,7 @@
 #![feature(ptr_internals, alloc)]
 use core::ptr::{self, Unique};
 use std::alloc::{alloc, dealloc, realloc, Layout};
+use std::marker::PhantomData;
 use std::mem;
 use std::ops::{Deref, DerefMut};
 
@@ -25,6 +26,38 @@ impl<T> RawValIter<T> {
             } else {
                 slice.as_ptr().offset(slice.len() as isize)
             },
+        }
+    }
+}
+
+impl<T> Iterator for RawValIter<T> {
+    type Item = T;
+    fn next(&mut self) -> Option<T> {
+        if self.start == self.end {
+            None
+        } else {
+            unsafe {
+                self.end = self.end.offset(-1);
+                Some(ptr::read(self.end))
+            }
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let len = (self.end as usize - self.start as usize) / mem::size_of::<T>();
+        (len, Some(len))
+    }
+}
+
+impl<T> DoubleEndedIterator for RawValIter<T> {
+    fn next_back(&mut self) -> Option<T> {
+        if self.start == self.end {
+            None
+        } else {
+            unsafe {
+                self.start = self.start.offset(1);
+                Some(ptr::read(self.start.offset(-1)))
+            }
         }
     }
 }
@@ -145,6 +178,18 @@ impl<T> Vec<T> {
             vec: self,
         }
     }
+
+    pub fn drain(&mut self) -> Drain<T> {
+        unsafe {
+            let iter = RawValIter::new(&self);
+            self.len = 0;
+
+            Drain {
+                raw: iter,
+                vec: PhantomData,
+            }
+        }
+    }
 }
 
 impl<T> Drop for Vec<T> {
@@ -186,27 +231,45 @@ pub struct IntoIter<T> {
 impl<T> Iterator for IntoIter<T> {
     type Item = T;
     fn next(&mut self) -> Option<T> {
-        if self.raw.start == self.raw.end {
-            None
-        } else {
-            unsafe {
-                self.raw.end = self.raw.end.offset(-1);
-                Some(ptr::read(self.raw.end))
-            }
-        }
+        self.raw.next()
     }
 }
 
 impl<T> DoubleEndedIterator for IntoIter<T> {
     fn next_back(&mut self) -> Option<T> {
-        if self.raw.start == self.raw.end {
-            None
-        } else {
-            unsafe {
-                self.raw.start = self.raw.start.offset(1);
-                Some(ptr::read(self.raw.start.offset(-1)))
-            }
-        }
+        self.raw.next_back()
+    }
+}
+
+pub struct Drain<'a, T: 'a> {
+    // Need to bound the lifetime here, so we do it with `&'a mut Vec<T>`
+    // because that's semantically what we contain. We're "just" calling
+    // `pop()` and `remove(0)`.
+    vec: PhantomData<&'a mut Vec<T>>,
+    raw: RawValIter<T>,
+}
+
+impl<'a, T> Iterator for Drain<'a, T> {
+    type Item = T;
+    fn next(&mut self) -> Option<T> {
+        self.raw.next()
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.raw.size_hint()
+    }
+}
+
+impl<'a, T> DoubleEndedIterator for Drain<'a, T> {
+    fn next_back(&mut self) -> Option<T> {
+        self.raw.next_back()
+    }
+}
+
+impl<'a, T> Drop for Drain<'a, T> {
+    fn drop(&mut self) {
+        println!("Drop for Drain");
+        for _ in &mut self.raw {}
     }
 }
 
@@ -272,4 +335,50 @@ mod tests {
         assert_eq!(iter.next(), Some(2));
         assert_eq!(iter.next(), None);
     }
+
+    #[test]
+    fn drain() {
+        {
+            let mut v = Vec::new();
+
+            v.push(1);
+            v.push(2);
+            v.push(3);
+
+            let mut iter = v.drain();
+
+            assert_eq!(iter.next(), Some(3));
+            assert_eq!(iter.next_back(), Some(1));
+            assert_eq!(iter.next(), Some(2));
+            assert_eq!(iter.next(), None);
+        }
+
+        {
+            #[derive(PartialEq, Eq, Debug)]
+            struct Val(i32);
+            impl Drop for Val {
+                fn drop(&mut self) {
+                    println!("drop Val({:?})", self.0);
+                }
+            }
+
+            let mut v = Vec::new();
+
+            v.push(Val(1));
+            v.push(Val(2));
+            v.push(Val(3));
+
+            {
+                let mut iter = v.drain();
+
+                assert_eq!(iter.next(), Some(Val(3)));
+                assert_eq!(iter.next_back(), Some(Val(1)));
+            }
+
+            let mut iter = v.into_iter();
+            assert_eq!(iter.next(), Some(Val(2)));
+            assert_eq!(iter.next(), None);
+        }
+    }
+
 }
